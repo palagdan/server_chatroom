@@ -15,7 +15,7 @@
 
 
 static _Atomic unsigned int cli_count;
-static int uid = 10;
+static int uid = 0;
 
 const char *ip = "127.0.0.1";
 
@@ -42,11 +42,23 @@ client_t* clients[MAX_CLIENTS];
 pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
+
+
+
+
 void str_overwrite_stdout(){
     printf("\r%s" ,"> ");
     fflush(stdout);
 }
 
+void str_trim_lf(char* arr, int length){
+    for(int i = 0; i < length; i++){
+        if(arr[i] == '\n'){
+            arr[i] = '\0';
+            break;
+        }
+    }
+}
 
 void queue_add(client_t* client){
     pthread_mutex_lock(&client_mutex);
@@ -71,10 +83,84 @@ void queue_remove(int uid){
     pthread_mutex_unlock(&client_mutex);
 }
 
+void send_message(char *s, int uid){
+    pthread_mutex_lock(&client_mutex);
+
+    for(int i = 0; i < MAX_CLIENTS; i++){
+        if(clients[i]){
+            if(clients[i]->uid != uid){
+                if(write(clients[i]->sockfd, s, strlen(s)) < 0){
+                    printf("Error: write to descriptor\n");
+                    break;
+                }
+            }
+        }
+    }
+     pthread_mutex_unlock(&client_mutex);
+}
+
+void* handle_client(void* arg){
+    char buffer[BUFFER_SIZE];
+    char name[NAME_LENGTH];
+    int leave_flag = 0;
+    cli_count++;
+
+    client_t* client = (client_t*)arg;
+
+    
+    
+    if(recv(client->sockfd, name, NAME_LENGTH,0) <= 0 || strlen(name) < 2 || strlen(name) >= NAME_LENGTH - 1){
+        printf("Enter the name correctly\n");
+        leave_flag = 1;
+    }else{
+        strcpy(client->name, name);
+        sprintf(buffer, "%s has joined\n", client->name);
+        printf("%s", buffer);
+        send_message(buffer, client->uid);
+    }
+   
+    bzero(buffer, BUFFER_SIZE);
+
+    while(1){
+        if(leave_flag){
+            break;
+        }
+    
+
+        int receive = recv(client->sockfd, buffer, BUFFER_SIZE, 0);
+
+        if(receive > 0){
+            if(strlen(buffer) > 0){
+                send_message(buffer, client->uid);
+                str_trim_lf(buffer,strlen(buffer));
+                printf("%s -> %s", buffer, client->name);
+            }
+        }else if(receive == 0 || strcmp(buffer, "exit") == 0){
+            sprintf(buffer, "%s has left\n", client->name);
+            printf("%s",buffer);
+            send_message(buffer, client->uid);
+            leave_flag = 1;
+        }else{
+            printf("ERROR: -1\n");
+            leave_flag = 1;
+        }
+        bzero(buffer, BUFFER_SIZE);
+        }
+
+    close(client->sockfd);
+    queue_remove(client->uid);
+    free(client);
+    pthread_detach(pthread_self());
+
+    return NULL;
+}
+
+
+
 int main(int argc, char** argv){
 
     if(argc != 2){
-        printf("Usage: %d <port>\n", argv[0]);
+        printf("Usage: %s <port>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -123,6 +209,17 @@ int main(int argc, char** argv){
             close(connfd);
             continue;
         }
+
+        client_t* new_client = (client_t*)malloc(sizeof(client_t));
+        new_client->address = client_addr;
+        new_client->sockfd = connfd;
+        new_client->uid = uid++;
+
+        // Add client to queue
+        queue_add(new_client);
+        pthread_create(&tid, NULL, &handle_client, (void*)new_client);
+
+        sleep(1);
     }
     close(listenfd);
 
